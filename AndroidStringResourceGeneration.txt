@@ -1,0 +1,236 @@
+import com.google.api.client.auth.oauth2.Credential
+import com.google.api.client.extensions.java6.auth.oauth2.AuthorizationCodeInstalledApp
+import com.google.api.client.extensions.jetty.auth.oauth2.LocalServerReceiver
+import com.google.api.client.googleapis.auth.oauth2.GoogleAuthorizationCodeFlow
+import com.google.api.client.googleapis.auth.oauth2.GoogleClientSecrets
+import com.google.api.client.googleapis.javanet.GoogleNetHttpTransport
+import com.google.api.client.http.javanet.NetHttpTransport
+import com.google.api.client.json.JsonFactory
+import com.google.api.client.json.gson.GsonFactory
+import com.google.api.client.util.store.FileDataStoreFactory
+import com.google.api.services.sheets.v4.Sheets
+import com.google.api.services.sheets.v4.SheetsScopes
+import java.io.IOException
+import java.io.InputStream
+import java.io.InputStreamReader
+import java.util.Collections
+
+
+plugins {
+    id("koreainvestment.android.library")
+}
+
+android {
+    namespace = "com.koreainvestment.resources"
+}
+
+dependencies {
+    api(libs.kibotu.android.resource.extensions)
+}
+
+buildscript {
+    repositories {
+        google()
+        mavenCentral()
+    }
+    dependencies {
+        classpath("com.google.api-client:google-api-client:2.6.0")
+        classpath("com.google.oauth-client:google-oauth-client-jetty:1.36.0")
+        classpath("com.google.apis:google-api-services-sheets:v4-rev20240826-2.0.0")
+    }
+}
+
+class GenerateStringResource(
+    private val sheetId: String,
+    private val sheetName: String
+) {
+    private val APPLICATION_NAME = "Google Sheets API Generate String Resource"
+    private val JSON_FACTORY: JsonFactory = GsonFactory.getDefaultInstance()
+    private val TOKENS_DIRECTORY_PATH = "$rootDir/resources"
+
+    private val SCOPES: List<String> = Collections.singletonList(SheetsScopes.SPREADSHEETS_READONLY)
+    private val CREDENTIALS_FILE_PATH = "$rootDir/resources/credentials.json"
+    private val menuMap =
+        mapOf(
+            "A" to "common",
+            "B" to "watch-list",
+            "C" to "discover",
+            "D" to "trade-lite",
+            "E" to "trade-pro",
+            "F" to "order-book",
+            "G" to "stock-detail",
+            "H" to "integrated-search",
+            "I" to "account",
+            "J" to "login-sign-up",
+            "K" to "settings",
+            "L" to "backend-only",
+            "M" to "mobile-otp",
+            "N" to "onboarding",
+            "O" to "virtual-trade",
+            "P" to "open-account"
+        )
+
+    @kotlin.Throws(IOException::class)
+    private fun getCredentials(HTTP_TRANSPORT: NetHttpTransport): Credential {
+        val inputStream: InputStream =
+            File(CREDENTIALS_FILE_PATH).inputStream()
+        val clientSecrets: GoogleClientSecrets =
+            GoogleClientSecrets.load(JSON_FACTORY, InputStreamReader(inputStream))
+        val flow =
+            GoogleAuthorizationCodeFlow
+                .Builder(
+                    HTTP_TRANSPORT,
+                    JSON_FACTORY,
+                    clientSecrets,
+                    SCOPES
+                ).setDataStoreFactory(FileDataStoreFactory(File(TOKENS_DIRECTORY_PATH)))
+                .setAccessType("offline")
+                .build()
+        val receiver = LocalServerReceiver.Builder().setPort(8888).build()
+        return AuthorizationCodeInstalledApp(flow, receiver).authorize("user")
+    }
+
+    fun generate() {
+        val HTTP_TRANSPORT = GoogleNetHttpTransport.newTrustedTransport()
+        val range = "$sheetName!A1:D"
+        val service =
+            Sheets
+                .Builder(HTTP_TRANSPORT, JSON_FACTORY, getCredentials(HTTP_TRANSPORT))
+                .setApplicationName(APPLICATION_NAME)
+                .build()
+        val response =
+            service
+                .spreadsheets()
+                .values()
+                .get(sheetId, range)
+                .execute()
+        val values: List<List<Any>> = response.getValues()
+
+        if (values.isEmpty()) {
+            println("No data found.")
+        } else {
+            val androidFolder = "$rootDir/resources/src/main/res"
+            val languageList = listOf("en", "vi")
+
+            for (i in 2 until values[1].size) {
+                val title = values[1][i].toString()
+                languageList.forEach { language ->
+                    if (title.contains(language)) {
+                        createAndroidResources(
+                            language = language,
+                            data = values,
+                            folder = androidFolder,
+                            column = i
+                        )
+                    }
+                }
+            }
+        }
+    }
+
+    private fun createAndroidResources(
+        language: String,
+        data: List<List<Any>>,
+        folder: String,
+        column: Int
+    ) {
+        val folderName =
+            if (language == "en") {
+                "values"
+            } else {
+                "values-$language"
+            }
+        val languageFolder = "$folder/$folderName"
+
+        val stringFiles = mutableListOf("strings-formatted.xml")
+        menuMap.entries.forEach {
+            stringFiles.add("strings-" + it.value + ".xml")
+        }
+
+        val contents = mutableListOf<String>()
+        stringFiles.forEach { _ ->
+            contents.add("<resources>")
+        }
+
+        for (i in 3 until data.size) {
+            if (data[i][1].toString().isEmpty()) {
+                continue
+            }
+
+            if (data[i][0].toString().isNotEmpty()) {
+                if (data[i][1].toString().startsWith("formatted")) {
+                    contents[0] += "\n\n\t<!-- " + data[i][0] + " -->"
+                } else {
+                    val c = data[i][0].toString()[0]
+                    val index = c - 'A' + 1
+                    contents[index] += "\n\n\t<!-- " + data[i][0] + " -->"
+                }
+
+                var formatted = ""
+                if (data[i][column].toString().indexOf("%s") > -1 ||
+                    data[i][column].toString().indexOf("%d") > -1 ||
+                    data[i][column].toString().indexOf("%@") > -1
+                ) {
+                    formatted = " formatted=\"false\""
+                }
+
+                val escapedContent =
+                    data[i][column]
+                        .toString()
+                        .replace("%@", "%s")
+                        .replace("&", "&amp;")
+                        .replace("<", "&lt;")
+                        .replace(">", "&gt;")
+                        .replace("\'", "\\'")
+                        .replace("%%%1", "%1\$s")
+                        .replace("%%%2", "%2\$s")
+                        .replace("%%%3", "%3\$s")
+                        .replace("%%%4", "%4\$s")
+                        .replace("%%%5", "%5\$s")
+                        .replace("%%N1%%", "%1\$d")
+                        .replace("%%N2%%", "%2\$d")
+                        .replace("%%N3%%", "%3\$d")
+                        .replace("%%N4%%", "%4\$d")
+                        .replace("%%N5%%", "%5\$d")
+                        .replace("%%%", "%s")
+                        .replace("%%N%%", "%d")
+                        .replace("-", "–")
+                        .replace("\n", "\\n")
+
+                if (data[i][1].toString().startsWith("formatted")) {
+                    contents[0] += "\n\t<string name=\"" +
+                        data[i][1]
+                            .toString()
+                            .lowercase() + "\">" + escapedContent + "</string>"
+                } else {
+                    val c = data[i][0].toString()[0]
+                    val index = c - 'A' + 1
+                    contents[index] +=
+                        "\n\t<string name=\"" +
+                        data[i][1]
+                            .toString()
+                            .lowercase() + "\"" + formatted + ">" + escapedContent + "</string>"
+                }
+            }
+        }
+
+        stringFiles.forEachIndexed { index, _ ->
+            contents[index] += "\n\n</resources>"
+        }
+
+        stringFiles.forEachIndexed { index, s ->
+            if (s.contains("backend-only")) {
+                return@forEachIndexed
+            }
+            val file = File("$languageFolder/$s")
+            file.writeText(contents[index])
+        }
+    }
+}
+
+tasks.register("GenerateStringResource") {
+    GenerateStringResource(
+        sheetId = "1GP9T_7B0LfIK28G2FH4mKZQpKlDVt1rO2ixXvbYMaHo",
+        sheetName = "All"
+    ).generate()
+}
